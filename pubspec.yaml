@@ -16,12 +16,6 @@ dependencies:
   # Barcode Scanner
   mobile_scanner: ^5.2.3
 
-  # Camera for virtual object counter
-  camera: ^0.10.5+9
-
-  # On-device object detection
-  google_mlkit_object_detection: ^0.13.0
-
   # File Picker for Excel/PDF
   file_picker: ^8.0.0
 
