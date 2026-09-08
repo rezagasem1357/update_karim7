@@ -217,17 +217,20 @@ String _displayPrice(int price) {
 }
 
 String _normalizeSearchText(String value) {
-  return value.toLowerCase()
-      .replaceAll('ك', 'ک').replaceAll('ي', 'ی').replaceAll('ى', 'ی')
-      .replaceAll('ۀ', 'ه').replaceAll('ة', 'ه')
-      .replaceAll(RegExp(r'[\u200c\u200d\s]+'), '');
-}
-
-String _manifestItemQuantityText(DeliveryItem item) {
-  if ((item.unit == 'بسته' || item.unit == 'جین') && item.packageSize > 0) {
-    return 'تعداد ${item.quantity} ${item.unit} | داخل هر ${item.unit}: ${item.packageSize} | تعداد واقعی: ${item.realQuantity}';
-  }
-  return 'تعداد ${item.quantity} ${item.unit}';
+  return value
+      .trim()
+      .toLowerCase()
+      .replaceAll('ك', 'ک')
+      .replaceAll('ي', 'ی')
+      .replaceAll('ى', 'ی')
+      .replaceAll('ۀ', 'ه')
+      .replaceAll('ة', 'ه')
+      .replaceAll('أ', 'ا')
+      .replaceAll('إ', 'ا')
+      .replaceAll('ؤ', 'و')
+      .replaceAll('ئ', 'ی')
+      .replaceAll(RegExp(r'[\u200c\u200f\u200e\u0640\u064B-\u065F\u0670]'), '')
+      .replaceAll(RegExp(r'\s+'), '');
 }
 
 // ==================== تابع بارگذاری فونت برای PDF ====================
@@ -331,6 +334,7 @@ class StoreNotificationService {
       FlutterLocalNotificationsPlugin();
   static const String _logoAsset = 'assets/images/Logopit_1787568628075.png';
   static const String _enabledKey = 'notifications_enabled';
+  static const String _limitedKey = 'limited_notifications_enabled';
   static const String _channelId = 'store_assistant_notifications';
   String? _logoPath;
   bool _initialized = false;
@@ -355,6 +359,11 @@ class StoreNotificationService {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool(_enabledKey) != true) return false;
     return _platformPermissionGranted();
+  }
+
+  Future<bool> _isLimitedMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_limitedKey) ?? false;
   }
 
   Future<bool> _platformPermissionGranted() async {
@@ -601,10 +610,13 @@ class StoreNotificationService {
     DateTime? date,
   }) async {
     if (!await isEnabled()) return;
+    final limited = await _isLimitedMode();
     final prefs = await SharedPreferences.getInstance();
-    final today = _jalaliNumericForDate(date ?? DateTime.now());
-    if (prefs.getBool('notifications_limited') == true &&
-        prefs.getString('welcome_notification_last_date') == today) return;
+    final todayKey = _toPersianDigits(_todayJalali());
+    if (limited &&
+        prefs.getString('welcome_notification_last_date') == todayKey) {
+      return;
+    }
     await initialize();
     final logoPath = await _ensureLogoFile();
     final now = date ?? DateTime.now();
@@ -619,7 +631,9 @@ class StoreNotificationService {
       ),
       _details(imagePath: logoPath),
     );
-    await prefs.setString('welcome_notification_last_date', today);
+    if (limited) {
+      await prefs.setString('welcome_notification_last_date', todayKey);
+    }
   }
 
   Future<void> showInvoiceRegistered({
@@ -628,10 +642,13 @@ class StoreNotificationService {
     String? invoiceImagePath,
   }) async {
     if (!await isEnabled()) return;
+    final limited = await _isLimitedMode();
     final prefs = await SharedPreferences.getInstance();
-    final today = _jalaliNumericForDate(DateTime.now());
-    if (prefs.getBool('notifications_limited') == true &&
-        prefs.getString('invoice_notification_last_date') == today) return;
+    final todayKey = _toPersianDigits(_todayJalali());
+    if (limited &&
+        prefs.getString('invoice_notification_last_date') == todayKey) {
+      return;
+    }
     await initialize();
     final imagePath = invoiceImagePath ?? await _ensureLogoFile();
     final body =
@@ -643,7 +660,9 @@ class StoreNotificationService {
       _details(imagePath: imagePath),
       payload: 'invoice_registered:$invoiceNumber',
     );
-    await prefs.setString('invoice_notification_last_date', today);
+    if (limited) {
+      await prefs.setString('invoice_notification_last_date', todayKey);
+    }
   }
 }
 
@@ -1116,29 +1135,13 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+// ==================== صفحه اصلی برنامه ====================
+
 class DeliveryScreen extends StatefulWidget {
   const DeliveryScreen({super.key});
+
   @override
   State<DeliveryScreen> createState() => _DeliveryScreenState();
-}
-
-class _NewMessageDot extends StatefulWidget {
-  const _NewMessageDot();
-  @override
-  State<_NewMessageDot> createState() => _NewMessageDotState();
-}
-
-class _NewMessageDotState extends State<_NewMessageDot> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this, duration: const Duration(milliseconds: 700),
-  )..repeat(reverse: true);
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
-  @override
-  Widget build(BuildContext context) => FadeTransition(
-    opacity: Tween(begin: .25, end: 1.0).animate(_c),
-    child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle)),
-  );
 }
 
 class _DeliveryScreenState extends State<DeliveryScreen> {
@@ -1179,12 +1182,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   bool _isLoading = false;
   bool _isPackageUnit = false;
   bool _isViewingManifest = false;
+  bool _hasNewManagerMessage = false;
   DeliveryManifest? _viewingManifest;
 
   String _userName = '';
   String _userGender = 'male';
-  String _managerMessage = '';
-  bool _managerMessageNew = false;
 
   @override
   void initState() {
@@ -1235,23 +1237,46 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       _userName = prefs.getString('user_name') ?? '';
       _userGender =
           prefs.getString('user_gender') == 'female' ? 'female' : 'male';
-      _managerMessage = prefs.getString('manager_message') ?? '';
-      _managerMessageNew = _managerMessage.isNotEmpty && prefs.getString('manager_message_seen_date') != _todayJalali();
     });
+  }
+
+  Future<void> _loadManagerMessage() async {
+    final prefs = await SharedPreferences.getInstance();
+    final message = prefs.getString('manager_message') ?? '';
+    final messageId = prefs.getString('manager_message_id') ?? '';
+    final readId = prefs.getString('manager_message_read_id') ?? '';
+    if (!mounted) return;
+    setState(() => _hasNewManagerMessage =
+        message.trim().isNotEmpty && messageId != readId);
   }
 
   Future<void> _openManagerMessage() async {
     final prefs = await SharedPreferences.getInstance();
+    final message = prefs.getString('manager_message') ?? '';
+    final messageId = prefs.getString('manager_message_id') ?? '';
+    if (message.trim().isEmpty) {
+      _showSuccessMessage('پیام جدیدی از مدیر وجود ندارد');
+      return;
+    }
+    await prefs.setString('manager_message_read_id', messageId);
+    if (mounted) setState(() => _hasNewManagerMessage = false);
     if (!mounted) return;
-    setState(() => _managerMessageNew = false);
-    await prefs.setString('manager_message_seen_date', _todayJalali());
-    if (_managerMessage.trim().isEmpty) { _showSuccessMessage('پیامی از طرف مدیریت وجود ندارد.'); return; }
-    if (!mounted) return;
-    showDialog<void>(context: context, builder: (_) => AlertDialog(
-      title: const Row(children: [Icon(Icons.campaign_outlined), SizedBox(width: 8), Text('پیام مدیریت')]),
-      content: Text(_managerMessage),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('بستن'))],
-    ));
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.campaign_outlined, color: Colors.orange),
+          SizedBox(width: 8),
+          Text('پیام مدیر')
+        ]),
+        content: SingleChildScrollView(child: Text(message)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('بستن'))
+        ],
+      ),
+    );
   }
 
   Future<void> _loadCustomEvents() async {
@@ -1295,7 +1320,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       // مقدار اولیه مطابق درخواست: ۲۱ روز مانده تا انبارگردانی.
       inventoryDate = today.subtract(const Duration(days: 19));
       await prefs.setString(
-        'fixed_inventory_last_date_v2', inventoryDate.toIso8601String());
+          'fixed_inventory_last_date_v2', inventoryDate.toIso8601String());
     }
 
     if (cleaningRaw != null) {
@@ -1304,7 +1329,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       // مقدار اولیه مطابق درخواست: ۳۰ روز مانده تا نظافت.
       cleaningDate = today;
       await prefs.setString(
-        'fixed_cleaning_last_date_v1', cleaningDate.toIso8601String());
+          'fixed_cleaning_last_date_v1', cleaningDate.toIso8601String());
     }
 
     if (!mounted) return;
@@ -1431,8 +1456,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                           const Text('📅 روزشمار رویدادهای مهم',
                               style: TextStyle(fontWeight: FontWeight.bold)),
                           const SizedBox(height: 10),
-                          _eventCountdownRow('انبارگردانی',
-                              inventoryRemaining),
+                          _eventCountdownRow('انبارگردانی', inventoryRemaining),
                           _eventCountdownRow('نظافت', cleaningRemaining),
                           ...futureEvents.take(5).map((item) =>
                               _eventCountdownRow(
@@ -1925,6 +1949,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     );
   }
 
+  int get _toolPageCount => (9 / 4).ceil();
+
   void _openManifestScreen() {
     _closeKeyboard();
     Navigator.push(
@@ -2005,6 +2031,27 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                         ),
                       ],
                     ),
+                    if (manifest.senderCompany.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Row(children: [
+                        const Text('🚚 شرکت ارسال کننده:',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(manifest.senderCompany))
+                      ]),
+                    ],
+                    if (manifest.freightCost > 0) ...[
+                      const SizedBox(height: 4),
+                      Row(children: [
+                        const Text('💵 هزینه باربری:',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 8),
+                        Text(_displayPrice(manifest.freightCost),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange))
+                      ]),
+                    ],
                   ],
                 ),
               ),
@@ -2039,7 +2086,14 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          Expanded(child: Text(_manifestItemQuantityText(item), textAlign: TextAlign.right)),
+                          Expanded(
+                            child: Text(
+                              item.unit == 'بسته' || item.unit == 'جین'
+                                  ? '${item.quantity} ${item.unit} • داخل هر ${item.unit}: ${item.packageSize > 0 ? item.packageSize : 1} • مجموع: ${item.realQuantity}'
+                                  : '${item.quantity} ${item.unit}',
+                              textAlign: TextAlign.right,
+                            ),
+                          ),
                           const SizedBox(width: 8),
                           Text(
                             _displayPrice(item.purchasePrice),
@@ -2082,11 +2136,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     final hasSales = _salesInvoices.isNotEmpty;
     final hasManifests = _savedManifests.isNotEmpty;
     final hasChangedPrices = _productDatabase.any((p) => p.isPriceModified);
-    final hasInventoryReport = _inventoryCounts.isNotEmpty;
+    final hasInventory = _inventoryCounts.isNotEmpty;
 
-    if (!hasSales && !hasManifests && !hasChangedPrices && !hasInventoryReport) {
-      _showSuccessMessage(
-          '⚠️ هنوز گزارشی برای اشتراک وجود ندارد');
+    if (!hasSales && !hasManifests && !hasChangedPrices && !hasInventory) {
+      _showSuccessMessage('⚠️ هنوز گزارشی برای اشتراک وجود ندارد');
       return;
     }
 
@@ -2127,23 +2180,28 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 ListTile(
                   leading: const CircleAvatar(
                     backgroundColor: Color(0xFFFFF3CD),
-                    child: Icon(Icons.price_change_outlined, color: Colors.orange),
+                    child:
+                        Icon(Icons.price_change_outlined, color: Colors.orange),
                   ),
                   title: const Text('گزارش قیمت‌های تغییر یافته'),
-                  subtitle: Text('تعداد کالاها: ${_productDatabase.where((p) => p.isPriceModified).length}'),
+                  subtitle: Text(
+                      'تعداد کالاها: ${_productDatabase.where((p) => p.isPriceModified).length}'),
                   onTap: () {
                     Navigator.pop(sheetContext);
                     _shareChangedPriceReport();
                   },
                 ),
-              if (hasInventoryReport)
+              if (hasInventory)
                 ListTile(
-                  leading: const CircleAvatar(backgroundColor: Color(0xFFE0F2F1), child: Icon(Icons.fact_check_outlined, color: Colors.teal)),
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xFFE0F2F1),
+                    child: Icon(Icons.fact_check_outlined, color: Colors.teal),
+                  ),
                   title: const Text('گزارش انبارگردانی'),
                   subtitle: Text('تعداد اقلام: ${_inventoryCounts.length}'),
                   onTap: () {
                     Navigator.pop(sheetContext);
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => InventoryReportScreen(entries: _inventoryCounts)));
+                    _shareInventoryCountReport();
                   },
                 ),
               if (hasManifests)
@@ -2165,6 +2223,68 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _shareInventoryCountReport() async {
+    try {
+      final font = await _loadFont();
+      final pdf = pw.Document();
+      final entries = _inventoryCounts;
+      final mismatches = entries.where((e) => e.difference != 0).toList();
+      final shortage = mismatches
+          .where((e) => e.difference < 0)
+          .fold<int>(0, (s, e) => s + e.difference.abs());
+      final surplus = mismatches
+          .where((e) => e.difference > 0)
+          .fold<int>(0, (s, e) => s + e.difference);
+      pdf.addPage(pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        textDirection: pw.TextDirection.rtl,
+        build: (_) => [
+          _pdfShareTextWidget('گزارش انبارگردانی', font,
+              fontSize: 22,
+              fontWeight: pw.FontWeight.bold,
+              textAlign: pw.TextAlign.center),
+          pw.SizedBox(height: 12),
+          _pdfShareTextWidget('تاریخ تهیه گزارش: ${_todayJalali()}', font,
+              fontSize: 9),
+          pw.SizedBox(height: 12),
+          _pdfShareTextWidget(
+              'کل اقلام: ${entries.length} | مغایرت: ${mismatches.length} | کسری: $shortage | اضافی: $surplus',
+              font,
+              fontWeight: pw.FontWeight.bold),
+          pw.SizedBox(height: 14),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey500),
+            children: [
+              pw.TableRow(children: [
+                _pdfShareCell('ردیف', font, bold: true),
+                _pdfShareCell('نام کالا', font, bold: true),
+                _pdfShareCell('موجودی سیستمی', font, bold: true),
+                _pdfShareCell('موجودی واقعی', font, bold: true),
+                _pdfShareCell('مغایرت', font, bold: true),
+              ]),
+              ...entries.asMap().entries.map((e) => pw.TableRow(children: [
+                    _pdfShareCell('${e.key + 1}', font),
+                    _pdfShareCell(e.value.name, font,
+                        align: pw.TextAlign.right),
+                    _pdfShareCell('${e.value.systemStock}', font),
+                    _pdfShareCell('${e.value.actualStock}', font),
+                    _pdfShareCell('${e.value.difference}', font),
+                  ])),
+            ],
+          ),
+        ],
+      ));
+      final bytes = await pdf.save();
+      final file =
+          File('${Directory.systemTemp.path}/inventory_report_share.pdf');
+      await file.writeAsBytes(bytes, flush: true);
+      await Share.shareXFiles([XFile(file.path)], text: 'گزارش انبارگردانی');
+      _showSuccessMessage('گزارش انبارگردانی ارسال شد');
+    } catch (e) {
+      _showSuccessMessage('خطا در تهیه گزارش انبارگردانی: $e');
+    }
   }
 
   Future<void> _shareAllManifests() async {
@@ -2215,9 +2335,22 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     font,
                     fontWeight: pw.FontWeight.bold,
                   ),
+                  pw.SizedBox(height: 6),
+                  _pdfShareTextWidget(
+                    'مجموع هزینه باربری: ${_formatPrice(_savedManifests.fold<int>(0, (sum, m) => sum + m.freightCost))} ریال',
+                    font,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
                 ],
               ),
             ),
+            pw.SizedBox(height: 14),
+            ..._savedManifests.map((m) => _pdfShareTextWidget(
+                  'بارنامه شماره ${m.number} | شرکت ارسال کننده: ${m.senderCompany.isEmpty ? 'ثبت نشده' : m.senderCompany} | هزینه باربری: ${_formatPrice(m.freightCost)} ریال',
+                  font,
+                  fontSize: 9,
+                  fontWeight: pw.FontWeight.bold,
+                )),
             pw.SizedBox(height: 18),
             _pdfShareTextWidget(
               'جزئیات بارنامه‌ها',
@@ -2234,8 +2367,6 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 1: pw.FlexColumnWidth(1.8),
                 2: pw.FlexColumnWidth(3.8),
                 3: pw.FlexColumnWidth(1.5),
-                4: pw.FlexColumnWidth(2.0),
-                5: pw.FlexColumnWidth(2.0),
               },
               children: [
                 pw.TableRow(
@@ -2244,9 +2375,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     _pdfShareCell('شماره بارنامه', font, bold: true),
                     _pdfShareCell('تاریخ', font, bold: true),
                     _pdfShareCell('نام کالا', font, bold: true),
-                    _pdfShareCell('تعداد / بسته', font, bold: true),
-                    _pdfShareCell('هزینه باربری', font, bold: true),
-                    _pdfShareCell('شرکت ارسال کننده', font, bold: true),
+                    _pdfShareCell('تعداد', font, bold: true),
                   ],
                 ),
                 ..._savedManifests.expand(
@@ -2258,9 +2387,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                         _pdfShareCell(m.date, font),
                         _pdfShareCell(item.name, font,
                             align: pw.TextAlign.right),
-                        _pdfShareCell(_manifestItemQuantityText(item), font),
-                        _pdfShareCell('${_formatPrice(m.freightCost)} ریال', font),
-                        _pdfShareCell(m.senderCompany.isEmpty ? '-' : m.senderCompany, font),
+                        _pdfShareCell(
+                          '${_toPersianDigits(item.quantity.toString())} ${item.unit}',
+                          font,
+                        ),
                       ],
                     ),
                   ),
@@ -2352,13 +2482,19 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                         font,
                         fontWeight: pw.FontWeight.bold,
                         color: PdfColors.green),
+                    if (manifest.senderCompany.isNotEmpty) ...[
+                      pw.SizedBox(height: 5),
+                      _pdfShareTextWidget(
+                          'شرکت ارسال کننده: ${manifest.senderCompany}', font,
+                          fontWeight: pw.FontWeight.bold),
+                    ],
                     if (manifest.freightCost > 0) ...[
                       pw.SizedBox(height: 5),
-                      _pdfShareTextWidget('هزینه کل باربری: ${_formatPrice(manifest.freightCost)} ریال', font, fontWeight: pw.FontWeight.bold),
-                    ],
-                    if (manifest.senderCompany.trim().isNotEmpty) ...[
-                      pw.SizedBox(height: 5),
-                      _pdfShareTextWidget('شرکت ارسال کننده: ${manifest.senderCompany}', font, fontWeight: pw.FontWeight.bold),
+                      _pdfShareTextWidget(
+                          'هزینه باربری: ${_formatPrice(manifest.freightCost)} ریال',
+                          font,
+                          fontWeight: pw.FontWeight.bold,
+                          color: PdfColors.orange),
                     ],
                   ]),
             ),
@@ -2394,7 +2530,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                           _pdfShareCell(entry.value.name, font,
                               align: pw.TextAlign.right),
                           _pdfShareCell(
-                              _manifestItemQuantityText(entry.value),
+                              entry.value.unit == 'بسته' ||
+                                      entry.value.unit == 'جین'
+                                  ? '${entry.value.quantity} ${entry.value.unit} / داخل: ${entry.value.packageSize} / مجموع: ${entry.value.realQuantity}'
+                                  : '${entry.value.quantity} ${entry.value.unit}',
                               font),
                           _pdfShareCell(
                               '${_formatPrice(entry.value.purchasePrice)} ریال',
@@ -3374,7 +3513,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            final query = searchCtrl.text.trim().toLowerCase();
+            final query = _normalizeSearchText(searchCtrl.text);
             final products = _productDatabase.where((p) {
               if (query.isEmpty) return true;
               return _normalizeSearchText(p.name).contains(query) ||
@@ -3880,14 +4019,17 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     );
   }
 
-  Future<void> _updateProductSellingPrice(ProductDatabaseItem updatedProduct) async {
-    final index = _productDatabase.indexWhere((p) => p.barcode == updatedProduct.barcode);
+  Future<void> _updateProductSellingPrice(
+      ProductDatabaseItem updatedProduct) async {
+    final index =
+        _productDatabase.indexWhere((p) => p.barcode == updatedProduct.barcode);
     if (index == -1) return;
     setState(() {
       _productDatabase[index] = updatedProduct;
     });
     await _saveProductDatabase();
-    _addSmartLog('💰 قیمت فروش «${updatedProduct.name}» به ${_formatPrice(updatedProduct.sellPrice)} ریال تغییر یافت');
+    _addSmartLog(
+        '💰 قیمت فروش «${updatedProduct.name}» به ${_formatPrice(updatedProduct.sellPrice)} ریال تغییر یافت');
   }
 
   Future<void> _shareChangedPriceReport() async {
@@ -3902,9 +4044,14 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       final pdf = pw.Document();
       final grouped = <String, List<ProductDatabaseItem>>{};
       for (final p in changed) {
-        grouped.putIfAbsent(p.groupName.trim().isEmpty ? 'عمومی' : p.groupName.trim(), () => []).add(p);
+        grouped
+            .putIfAbsent(
+                p.groupName.trim().isEmpty ? 'عمومی' : p.groupName.trim(),
+                () => [])
+            .add(p);
       }
-      final totalOld = changed.fold<int>(0, (sum, p) => sum + (p.originalSellPrice ?? p.sellPrice));
+      final totalOld = changed.fold<int>(
+          0, (sum, p) => sum + (p.originalSellPrice ?? p.sellPrice));
       final totalNew = changed.fold<int>(0, (sum, p) => sum + p.sellPrice);
 
       pdf.addPage(
@@ -3914,61 +4061,100 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
           textDirection: pw.TextDirection.rtl,
           maxPages: 500,
           build: (context) => [
-            pw.Center(child: _pdfShareTextWidget('گزارش قیمت‌های تغییر یافته', font, fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.orange, textAlign: pw.TextAlign.center)),
+            pw.Center(
+                child: _pdfShareTextWidget('گزارش قیمت‌های تغییر یافته', font,
+                    fontSize: 24,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.orange,
+                    textAlign: pw.TextAlign.center)),
             pw.SizedBox(height: 16),
             pw.Container(
               width: double.infinity,
               padding: const pw.EdgeInsets.all(12),
-              decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey300), borderRadius: pw.BorderRadius.circular(8)),
-              child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.stretch, children: [
-                _pdfShareTextWidget('تعداد کالاهای تغییر یافته: ${_toPersianDigits(changed.length.toString())}', font, fontWeight: pw.FontWeight.bold),
-                pw.SizedBox(height: 6),
-                _pdfShareTextWidget('مجموع قیمت فروش قبل: ${_formatPrice(totalOld)} ریال', font),
-                pw.SizedBox(height: 6),
-                _pdfShareTextWidget('مجموع قیمت فروش جدید: ${_formatPrice(totalNew)} ریال', font, fontWeight: pw.FontWeight.bold, color: PdfColors.green),
-                pw.SizedBox(height: 6),
-                _pdfShareTextWidget('تاریخ تهیه گزارش: ${_todayJalali()}', font, fontSize: 9, color: PdfColors.grey600),
-              ]),
+              decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey300),
+                  borderRadius: pw.BorderRadius.circular(8)),
+              child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+                  children: [
+                    _pdfShareTextWidget(
+                        'تعداد کالاهای تغییر یافته: ${_toPersianDigits(changed.length.toString())}',
+                        font,
+                        fontWeight: pw.FontWeight.bold),
+                    pw.SizedBox(height: 6),
+                    _pdfShareTextWidget(
+                        'مجموع قیمت فروش قبل: ${_formatPrice(totalOld)} ریال',
+                        font),
+                    pw.SizedBox(height: 6),
+                    _pdfShareTextWidget(
+                        'مجموع قیمت فروش جدید: ${_formatPrice(totalNew)} ریال',
+                        font,
+                        fontWeight: pw.FontWeight.bold,
+                        color: PdfColors.green),
+                    pw.SizedBox(height: 6),
+                    _pdfShareTextWidget(
+                        'تاریخ تهیه گزارش: ${_todayJalali()}', font,
+                        fontSize: 9, color: PdfColors.grey600),
+                  ]),
             ),
             pw.SizedBox(height: 18),
             ...grouped.entries.expand((entry) => [
-              _pdfShareTextWidget('گروه: ${entry.key}', font, fontSize: 17, fontWeight: pw.FontWeight.bold),
-              pw.SizedBox(height: 8),
-              pw.Table(
-                border: pw.TableBorder.all(color: PdfColors.grey500),
-                tableWidth: pw.TableWidth.max,
-                columnWidths: const {0: pw.FixedColumnWidth(32), 1: pw.FlexColumnWidth(3.2), 2: pw.FlexColumnWidth(1.8), 3: pw.FlexColumnWidth(1.8), 4: pw.FlexColumnWidth(1.7)},
-                children: [
-                  pw.TableRow(decoration: const pw.BoxDecoration(color: PdfColors.orange100), children: [
-                    _pdfShareCell('ردیف', font, bold: true),
-                    _pdfShareCell('کالا', font, bold: true),
-                    _pdfShareCell('قیمت قبل', font, bold: true),
-                    _pdfShareCell('قیمت جدید', font, bold: true),
-                    _pdfShareCell('تغییر', font, bold: true),
-                  ]),
-                  ...entry.value.asMap().entries.map((e) {
-                    final p = e.value;
-                    final old = p.originalSellPrice ?? p.sellPrice;
-                    final diff = p.sellPrice - old;
-                    return pw.TableRow(children: [
-                      _pdfShareCell('${e.key + 1}', font),
-                      _pdfShareCell(p.name, font, align: pw.TextAlign.right),
-                      _pdfShareCell('${_formatPrice(old)} ریال', font, fontSize: 8),
-                      _pdfShareCell('${_formatPrice(p.sellPrice)} ریال', font, fontSize: 8),
-                      _pdfShareCell('${diff >= 0 ? '+' : '-'}${_formatPrice(diff.abs())}', font, fontSize: 8),
-                    ]);
-                  }),
-                ],
-              ),
-              pw.SizedBox(height: 16),
-            ]),
+                  _pdfShareTextWidget('گروه: ${entry.key}', font,
+                      fontSize: 17, fontWeight: pw.FontWeight.bold),
+                  pw.SizedBox(height: 8),
+                  pw.Table(
+                    border: pw.TableBorder.all(color: PdfColors.grey500),
+                    tableWidth: pw.TableWidth.max,
+                    columnWidths: const {
+                      0: pw.FixedColumnWidth(32),
+                      1: pw.FlexColumnWidth(3.2),
+                      2: pw.FlexColumnWidth(1.8),
+                      3: pw.FlexColumnWidth(1.8),
+                      4: pw.FlexColumnWidth(1.7)
+                    },
+                    children: [
+                      pw.TableRow(
+                          decoration: const pw.BoxDecoration(
+                              color: PdfColors.orange100),
+                          children: [
+                            _pdfShareCell('ردیف', font, bold: true),
+                            _pdfShareCell('کالا', font, bold: true),
+                            _pdfShareCell('قیمت قبل', font, bold: true),
+                            _pdfShareCell('قیمت جدید', font, bold: true),
+                            _pdfShareCell('تغییر', font, bold: true),
+                          ]),
+                      ...entry.value.asMap().entries.map((e) {
+                        final p = e.value;
+                        final old = p.originalSellPrice ?? p.sellPrice;
+                        final diff = p.sellPrice - old;
+                        return pw.TableRow(children: [
+                          _pdfShareCell('${e.key + 1}', font),
+                          _pdfShareCell(p.name, font,
+                              align: pw.TextAlign.right),
+                          _pdfShareCell('${_formatPrice(old)} ریال', font,
+                              fontSize: 8),
+                          _pdfShareCell(
+                              '${_formatPrice(p.sellPrice)} ریال', font,
+                              fontSize: 8),
+                          _pdfShareCell(
+                              '${diff >= 0 ? '+' : '-'}${_formatPrice(diff.abs())}',
+                              font,
+                              fontSize: 8),
+                        ]);
+                      }),
+                    ],
+                  ),
+                  pw.SizedBox(height: 16),
+                ]),
           ],
         ),
       );
       final bytes = await pdf.save();
-      final tempFile = File('${Directory.systemTemp.path}/changed_prices_report.pdf');
+      final tempFile =
+          File('${Directory.systemTemp.path}/changed_prices_report.pdf');
       await tempFile.writeAsBytes(bytes, flush: true);
-      await Share.shareXFiles([XFile(tempFile.path)], text: 'گزارش قیمت‌های تغییر یافته\nتعداد کالاها: ${changed.length}');
+      await Share.shareXFiles([XFile(tempFile.path)],
+          text: 'گزارش قیمت‌های تغییر یافته\nتعداد کالاها: ${changed.length}');
       _showSuccessMessage('گزارش قیمت‌های تغییر یافته ارسال شد');
     } catch (e) {
       _showSuccessMessage('خطا در تهیه گزارش قیمت‌ها: $e');
@@ -4211,6 +4397,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   void _submitDelivery() async {
     _closeKeyboard();
     final TextEditingController dateController = TextEditingController();
+    final TextEditingController senderCtrl = TextEditingController();
+    final TextEditingController freightCostCtrl = TextEditingController();
     dateController.text = _getTodayDate();
 
     showDialog(
@@ -4238,6 +4426,27 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 ),
                 prefixIcon: const Icon(Icons.calendar_today),
               ),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: senderCtrl,
+              decoration: InputDecoration(
+                labelText: 'نام شرکت ارسال کننده',
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                prefixIcon: const Icon(Icons.local_shipping_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: freightCostCtrl,
+              decoration: InputDecoration(
+                labelText: 'هزینه باربری (ریال)',
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                prefixIcon: const Icon(Icons.payments_outlined),
+              ),
+              keyboardType: TextInputType.number,
             ),
             const SizedBox(height: 16),
             Container(
@@ -4295,6 +4504,9 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 date: manifestDate,
                 items: List.from(_currentItems),
                 totalPrice: _totalPurchasePrice,
+                freightCost:
+                    int.tryParse(freightCostCtrl.text.replaceAll(',', '')) ?? 0,
+                senderCompany: senderCtrl.text.trim(),
                 createdAt: DateTime.now().millisecondsSinceEpoch.toString(),
               );
 
@@ -4775,6 +4987,18 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                           'مثلاً 10 - اختیاری است؛ در صورت خالی بودن فقط تعداد ${_selectedUnit} ثبت می‌شود',
                     ),
                     keyboardType: TextInputType.number,
+                    validator: (value) {
+                      if (_isPackageUnit &&
+                          (value == null || value.trim().isEmpty)) {
+                        return 'برای واحد بسته/جین، تعداد داخل هر بسته را وارد کنید';
+                      }
+                      if (value != null &&
+                          value.trim().isNotEmpty &&
+                          int.tryParse(value) == null) {
+                        return 'تعداد معتبر وارد کنید';
+                      }
+                      return null;
+                    },
                   ),
                 ],
                 const SizedBox(height: 4),
@@ -4862,7 +5086,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   Widget _buildSearchResults() {
     final searchDbMatches = _productDatabase.where((p) {
       final term = _normalizeSearchText(_searchController.text);
-      return _normalizeSearchText(p.name).contains(term) || p.barcode.contains(term);
+      return _normalizeSearchText(p.name).contains(term) ||
+          p.barcode.contains(term);
     }).toList();
 
     final totalResults = _filteredItems.length +
@@ -5338,55 +5563,120 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               const SizedBox(height: 10),
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final allTools = <Widget>[
-                    _buildToolCard(icon: Icons.local_shipping_outlined, title: 'بارنامه', subtitle: 'ثبت و مدیریت بار', iconColor: Colors.blue, onTap: _openManifestScreen),
-                    _buildToolCard(icon: Icons.receipt_long_outlined, title: 'فروش', subtitle: 'فاکتورهای فروش', iconColor: Colors.green, onTap: _openSalesInvoicesScreen),
-                    _buildToolCard(icon: Icons.payments_outlined, title: 'هزینه های روزانه', subtitle: 'ثبت و مدیریت هزینه ها', iconColor: Colors.redAccent, onTap: _openDailyExpensesScreen),
-                    _buildToolCard(icon: Icons.inventory_2_outlined, title: 'بانک اطلاعاتی', subtitle: 'کالاها و پوشه‌ها', iconColor: Colors.deepPurple, onTap: _openProductDatabaseScreen),
-                    _buildToolCard(icon: Icons.share_outlined, title: 'اشتراک گزارش', subtitle: 'گزارش فروش، بارنامه و انبارگردانی', iconColor: Colors.orange, onTap: _openShareReportChooser),
-                    _buildToolCard(icon: Icons.settings_outlined, title: 'تنظیمات', subtitle: 'پروفایل و ظاهر', iconColor: Colors.grey, onTap: _openSettingsScreen),
-                    _buildToolCard(icon: Icons.fact_check_outlined, title: 'انبارگردانی', subtitle: 'مغایرت موجودی کالاها', iconColor: Colors.teal, onTap: _openInventoryCountScreen),
-                    _buildToolCard(icon: Icons.center_focus_strong_outlined, title: 'شمارشگر مجازی', subtitle: 'شمارش هوشمند اجسام با دوربین', iconColor: Colors.indigo, onTap: _openVirtualCounterScreen),
-                    _buildToolCard(icon: Icons.trending_up_outlined, title: 'محاسبه سود فروش', subtitle: 'محاسبه سود و درصد افزایش قیمت', iconColor: Colors.green, onTap: _openSalesProfitScreen),
-                  ];
                   final cardWidth = (constraints.maxWidth - 10) / 2;
                   final cardHeight = cardWidth / 1.65;
                   final toolsHeight = (cardHeight * 2) + 10;
+                  final allTools = <Widget>[
+                    _buildToolCard(
+                      icon: Icons.local_shipping_outlined,
+                      title: 'بارنامه',
+                      subtitle: 'ثبت و مدیریت بار',
+                      iconColor: Colors.blue,
+                      onTap: _openManifestScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.receipt_long_outlined,
+                      title: 'فروش',
+                      subtitle: 'فاکتورهای فروش',
+                      iconColor: Colors.green,
+                      onTap: _openSalesInvoicesScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.payments_outlined,
+                      title: 'هزینه های روزانه',
+                      subtitle: 'ثبت و مدیریت هزینه ها',
+                      iconColor: Colors.redAccent,
+                      onTap: _openDailyExpensesScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'بانک اطلاعاتی',
+                      subtitle: 'کالاها و پوشه‌ها',
+                      iconColor: Colors.deepPurple,
+                      onTap: _openProductDatabaseScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.share_outlined,
+                      title: 'اشتراک گزارش',
+                      subtitle: 'گزارش فروش و بارنامه',
+                      iconColor: Colors.orange,
+                      onTap: _openShareReportChooser,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.settings_outlined,
+                      title: 'تنظیمات',
+                      subtitle: 'پروفایل و ظاهر',
+                      iconColor: Colors.grey,
+                      onTap: _openSettingsScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.fact_check_outlined,
+                      title: 'انبارگردانی',
+                      subtitle: 'مغایرت موجودی کالاها',
+                      iconColor: Colors.teal,
+                      onTap: _openInventoryCountScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.center_focus_strong_outlined,
+                      title: 'شمارشگر مجازی',
+                      subtitle: 'شمارش هوشمند اجسام با دوربین',
+                      iconColor: Colors.indigo,
+                      onTap: _openVirtualCounterScreen,
+                    ),
+                    _buildToolCard(
+                      icon: Icons.trending_up_outlined,
+                      title: 'محاسبه سود فروش',
+                      subtitle: 'محاسبه سود و درصد افزایش قیمت',
+                      iconColor: Colors.green,
+                      onTap: _openSalesProfitScreen,
+                    ),
+                  ];
                   final pageCount = (allTools.length / 4).ceil();
-                  if (_toolsPage >= pageCount) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted && _toolsPage >= pageCount) setState(() => _toolsPage = pageCount - 1);
-                    });
-                  }
-                  return Column(
-                    children: [
-                      SizedBox(
-                        height: toolsHeight,
-                        child: PageView.builder(
-                          controller: _toolsPageController,
-                          itemCount: pageCount,
-                          onPageChanged: (index) => setState(() => _toolsPage = index),
-                          itemBuilder: (context, pageIndex) {
-                            final pageTools = allTools.skip(pageIndex * 4).take(4).toList();
-                            while (pageTools.length < 4) pageTools.add(const SizedBox.shrink());
-                            return GridView.count(crossAxisCount: 2, physics: const NeverScrollableScrollPhysics(), padding: EdgeInsets.zero, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.65, children: pageTools);
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(pageCount, (index) => AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          margin: const EdgeInsets.symmetric(horizontal: 3),
-                          width: _toolsPage == index ? 18 : 7,
-                          height: 7,
-                          decoration: BoxDecoration(color: _toolsPage == index ? Colors.green.shade700 : Colors.grey.shade400, borderRadius: BorderRadius.circular(10)),
-                        )),
-                      ),
-                    ],
+                  return SizedBox(
+                    height: toolsHeight,
+                    child: PageView.builder(
+                      controller: _toolsPageController,
+                      itemCount: pageCount,
+                      onPageChanged: (index) =>
+                          setState(() => _toolsPage = index),
+                      itemBuilder: (context, pageIndex) {
+                        final pageTools =
+                            allTools.skip(pageIndex * 4).take(4).toList();
+                        while (pageTools.length < 4) {
+                          pageTools.add(const SizedBox.shrink());
+                        }
+                        return GridView.count(
+                          crossAxisCount: 2,
+                          physics: const NeverScrollableScrollPhysics(),
+                          padding: EdgeInsets.zero,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          childAspectRatio: 1.65,
+                          children: pageTools,
+                        );
+                      },
+                    ),
                   );
                 },
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  _toolPageCount,
+                  (index) => AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: _toolsPage == index ? 18 : 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: _toolsPage == index
+                          ? Colors.green.shade700
+                          : Colors.grey.shade400,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(height: 22),
               if (_currentItems.isNotEmpty) ...[
@@ -5510,7 +5800,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               Text('بارکد: ${item.barcode}',
                   style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
             Text('واحد: ${item.unit}', style: const TextStyle(fontSize: 13)),
-            Text(_manifestItemQuantityText(item)),
+            Text('تعداد: ${item.quantity} ${item.unit}'),
             if (item.packageSize > 0)
               Text(
                   'تعداد داخل ${item.unit}: ${item.packageSize}  •  تعداد واقعی: ${item.realQuantity}'),
@@ -5651,11 +5941,37 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
           elevation: 0,
           backgroundColor: Colors.green.shade700,
           foregroundColor: Colors.white,
-          leading: Stack(clipBehavior: Clip.none, children: [
-            IconButton(onPressed: _openManagerMessage, icon: const Icon(Icons.mail_outline), tooltip: 'پیام مدیریت'),
-            if (_managerMessageNew) const Positioned(right: 8, top: 7, child: _NewMessageDot()),
-          ]),
           actions: [
+            if (!_isViewingManifest)
+              TweenAnimationBuilder<double>(
+                tween:
+                    Tween(begin: 0.0, end: _hasNewManagerMessage ? 1.0 : 0.0),
+                duration: const Duration(milliseconds: 500),
+                curve: Curves.easeInOut,
+                builder: (context, value, child) => Transform.translate(
+                  offset: Offset(
+                      _hasNewManagerMessage
+                          ? (value * 5 * ((value * 10).floor().isEven ? 1 : -1))
+                          : 0,
+                      0),
+                  child: Stack(
+                    children: [
+                      IconButton(
+                          icon: Icon(_hasNewManagerMessage
+                              ? Icons.mark_email_unread_outlined
+                              : Icons.mail_outline),
+                          tooltip: 'پیام مدیر',
+                          onPressed: _openManagerMessage),
+                      if (_hasNewManagerMessage)
+                        const Positioned(
+                            right: 7,
+                            top: 7,
+                            child: CircleAvatar(
+                                radius: 5, backgroundColor: Colors.red)),
+                    ],
+                  ),
+                ),
+              ),
             if (!_isViewingManifest)
               IconButton(
                 icon: const Icon(Icons.settings_outlined),
@@ -5832,27 +6148,6 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
 // ==================== ادامه کد (ManifestScreen, SalesInvoicesScreen, SettingsScreen, ProductDatabaseScreen, BarcodeScannerScreen و مدل‌ها) در پاسخ بعدی ====================
 // ==================== صفحه اختصاصی بارنامه‌ها ====================
 
-'توسعه‌دهنده: رضا قاسمی',
-                        style: TextStyle(color: Colors.grey)),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        body: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : _isViewingManifest
-                ? _buildManifestView()
-                : _buildMainView(),
-      ),
-    );
-  }
-}
-
-// ==================== ادامه کد (ManifestScreen, SalesInvoicesScreen, SettingsScreen, ProductDatabaseScreen, BarcodeScannerScreen و مدل‌ها) در پاسخ بعدی ====================
-// ==================== صفحه اختصاصی بارنامه‌ها ====================
-
 class ManifestScreen extends StatefulWidget {
   final List<DeliveryManifest> manifests;
   final Function(DeliveryManifest) onDelete;
@@ -5903,7 +6198,7 @@ class _ManifestScreenState extends State<ManifestScreen> {
     final quantityCtrl = TextEditingController();
     final packageSizeCtrl = TextEditingController();
     final freightCostCtrl = TextEditingController();
-    final senderCompanyCtrl = TextEditingController();
+    final senderCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
     String selectedUnit = 'عدد';
@@ -5958,7 +6253,7 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                   quantityCtrl.clear();
                                   packageSizeCtrl.clear();
                                   freightCostCtrl.clear();
-                                  senderCompanyCtrl.clear();
+                                  senderCtrl.clear();
                                   setSheetState(() {
                                     selectedUnit = 'عدد';
                                     isPackageUnit = false;
@@ -6110,8 +6405,42 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                 ),
                               ),
                               keyboardType: TextInputType.number,
+                              validator: (value) {
+                                if (isPackageUnit &&
+                                    (value == null || value.trim().isEmpty)) {
+                                  return 'برای واحد بسته/جین، تعداد داخل هر بسته را وارد کنید';
+                                }
+                                if (value != null &&
+                                    value.trim().isNotEmpty &&
+                                    int.tryParse(value) == null) {
+                                  return 'تعداد معتبر وارد کنید';
+                                }
+                                return null;
+                              },
                             ),
                           ],
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: senderCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'نام شرکت ارسال کننده',
+                              prefixIcon:
+                                  const Icon(Icons.local_shipping_outlined),
+                              border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          TextFormField(
+                            controller: freightCostCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'هزینه باربری (ریال)',
+                              prefixIcon: const Icon(Icons.payments_outlined),
+                              border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
+                            keyboardType: TextInputType.number,
+                          ),
                           const SizedBox(height: 12),
                           SizedBox(
                             width: double.infinity,
@@ -6151,6 +6480,8 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                 nameCtrl.clear();
                                 quantityCtrl.clear();
                                 packageSizeCtrl.clear();
+                                freightCostCtrl.clear();
+                                senderCtrl.clear();
                                 setSheetState(() {
                                   selectedUnit = 'عدد';
                                   isPackageUnit = false;
@@ -6164,12 +6495,6 @@ class _ManifestScreenState extends State<ManifestScreen> {
                             ),
                           ),
                           const SizedBox(height: 8),
-                          const SizedBox(height: 12),
-                          Row(children: [
-                            Expanded(child: TextFormField(controller: freightCostCtrl, decoration: InputDecoration(labelText: 'هزینه باربری (ریال)', prefixIcon: const Icon(Icons.payments_outlined), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))), keyboardType: TextInputType.number)),
-                            const SizedBox(width: 10),
-                            Expanded(child: TextFormField(controller: senderCompanyCtrl, decoration: InputDecoration(labelText: 'شرکت ارسال کننده', prefixIcon: const Icon(Icons.business_outlined), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
-                          ]),
                           if (tempItems.isNotEmpty) ...[
                             const Text(
                               '📦 کالاهای بارنامه:',
@@ -6200,8 +6525,9 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                             fontWeight: FontWeight.w500),
                                       ),
                                       subtitle: Text(
-                                        (item['unit'] == 'بسته' || item['unit'] == 'جین')
-                                            ? 'تعداد بسته: ${item['quantity']} | داخل بسته: ${item['packageSize']}'
+                                        item['unit'] == 'بسته' ||
+                                                item['unit'] == 'جین'
+                                            ? 'تعداد بسته: ${item['quantity']} | داخل هر بسته: ${item['packageSize']} | مجموع: ${item['realQuantity']}'
                                             : 'تعداد: ${item['quantity']} ${item['unit']}',
                                         style: const TextStyle(fontSize: 11),
                                       ),
@@ -6274,11 +6600,14 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                         date: _getTodayDate(),
                                         items: items,
                                         totalPrice: 0,
+                                        freightCost: int.tryParse(
+                                                freightCostCtrl.text
+                                                    .replaceAll(',', '')) ??
+                                            0,
+                                        senderCompany: senderCtrl.text.trim(),
                                         createdAt: DateTime.now()
                                             .millisecondsSinceEpoch
                                             .toString(),
-                                        freightCost: int.tryParse(freightCostCtrl.text.replaceAll(',', '').trim()) ?? 0,
-                                        senderCompany: senderCompanyCtrl.text.trim(),
                                       );
 
                                       widget.onManifestSaved(manifest);
@@ -6308,9 +6637,6 @@ class _ManifestScreenState extends State<ManifestScreen> {
       },
     );
   }
-
-    freightCostCtrl.dispose();
-    senderCompanyCtrl.dispose();
 
   String _getTodayDate() {
     final now = DateTime.now();
@@ -6585,8 +6911,19 @@ class _ManifestScreenState extends State<ManifestScreen> {
                     pw.SizedBox(height: 5),
                     _pdfTextWidget('تعداد کل کالاها: $totalItems', font,
                         fontWeight: pw.FontWeight.bold),
+                    pw.SizedBox(height: 5),
+                    _pdfTextWidget(
+                        'مجموع هزینه باربری: ${_formatPrice(widget.manifests.fold<int>(0, (s, m) => s + m.freightCost))} ریال',
+                        font,
+                        fontWeight: pw.FontWeight.bold),
                   ]),
             ),
+            pw.SizedBox(height: 14),
+            ...widget.manifests.map((m) => _pdfTextWidget(
+                'بارنامه شماره ${m.number} | شرکت ارسال کننده: ${m.senderCompany.isEmpty ? 'ثبت نشده' : m.senderCompany} | هزینه باربری: ${_formatPrice(m.freightCost)} ریال',
+                font,
+                fontSize: 9,
+                fontWeight: pw.FontWeight.bold)),
             pw.SizedBox(height: 18),
             _pdfTextWidget('جزئیات بارنامه‌ها', font,
                 fontSize: 17, fontWeight: pw.FontWeight.bold),
@@ -6616,7 +6953,11 @@ class _ManifestScreenState extends State<ManifestScreen> {
                           _pdfCell('${m.number}', font),
                           _pdfCell(m.date, font),
                           _pdfCell(item.name, font, align: pw.TextAlign.right),
-                          _pdfCell('${item.quantity} ${item.unit}', font),
+                          _pdfCell(
+                              item.unit == 'بسته' || item.unit == 'جین'
+                                  ? '${item.quantity} ${item.unit} / داخل: ${item.packageSize > 0 ? item.packageSize : 1} / مجموع: ${item.realQuantity}'
+                                  : '${item.quantity} ${item.unit}',
+                              font),
                         ]))),
               ],
             ),
@@ -7792,20 +8133,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _notificationsEnabled = prefs.getBool('notifications_enabled') ?? false;
-      _limitedNotifications = prefs.getBool('notifications_limited') ?? false;
+      _limitedNotifications =
+          prefs.getBool('limited_notifications_enabled') ?? false;
     });
-  }
-
-  Future<void> _toggleLimitedNotifications(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('notifications_limited', value);
-    if (!mounted) return;
-    setState(() => _limitedNotifications = value);
-    if (value) {
-      _showSnackbar('اعلان محدود شد: صبح ۸:۳۰ و حداکثر یک اعلان ورود و یک اعلان فاکتور در روز.');
-    } else {
-      _showSnackbar('محدودسازی اعلان غیرفعال شد.');
-    }
   }
 
   Future<void> _toggleNotifications(bool value) async {
@@ -7828,8 +8158,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         setState(() => _notificationsEnabled = true);
         _showSnackbar('✅ سیستم اعلان فعال شد');
-        await StoreNotificationService.instance.showActivationNotification();
         final prefs = await SharedPreferences.getInstance();
+        final limited = prefs.getBool('limited_notifications_enabled') ?? false;
+        if (!limited) {
+          await StoreNotificationService.instance.showActivationNotification();
+        }
         final name = prefs.getString('user_name') ?? widget.userName;
         final gender =
             prefs.getString('user_gender') == 'female' ? 'female' : 'male';
@@ -8029,13 +8362,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: _darkMode ? Colors.white : Colors.orange,
                       ),
                     ),
-                    SwitchListTile(
-                      title: const Text('محدودسازی اعلان‌ها'),
-                      subtitle: const Text('اعلان صبح ساعت ۸:۳۰ و حداکثر یک اعلان ورود و یک اعلان فاکتور فروش در هر روز'),
-                      value: _limitedNotifications,
-                      onChanged: _notificationsEnabled ? _toggleLimitedNotifications : null,
-                      secondary: const Icon(Icons.notifications_paused_outlined),
-                    ),
                   ],
                 ),
               ),
@@ -8058,7 +8384,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       subtitle: Text(
                         _notificationBusy
                             ? 'در حال بررسی دسترسی...'
-                            : (_notificationsEnabled ? 'فعال • صبح ۸:۳۰ و حداکثر یک اعلان در روز' : 'غیرفعال'),
+                            : (_notificationsEnabled ? 'فعال' : 'غیرفعال'),
                       ),
                       value: _notificationsEnabled,
                       onChanged:
@@ -8070,6 +8396,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color:
                             _notificationsEnabled ? Colors.green : Colors.grey,
                       ),
+                    ),
+                    SwitchListTile(
+                      title: const Text('محدودسازی اعلان‌ها'),
+                      subtitle: const Text(
+                          'فقط اعلان صبح ۸:۳۰، ورود یک‌بار در روز و اولین فاکتور فروش هر روز'),
+                      value: _limitedNotifications,
+                      onChanged: (value) async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool(
+                            'limited_notifications_enabled', value);
+                        if (mounted)
+                          setState(() => _limitedNotifications = value);
+                      },
+                      secondary:
+                          const Icon(Icons.notifications_paused_outlined),
                     ),
                   ],
                 ),
@@ -8240,7 +8581,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 class SalesProfitScreen extends StatefulWidget {
   final List<ProductDatabaseItem> products;
-  final Future<void> Function(ProductDatabaseItem updatedProduct)? onPriceChanged;
+  final Future<void> Function(ProductDatabaseItem updatedProduct)?
+      onPriceChanged;
 
   const SalesProfitScreen({
     super.key,
@@ -8256,8 +8598,7 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
   late List<ProductDatabaseItem> _products;
   String _searchQuery = '';
   String _selectedGroup = 'همه';
-  double _profitFilterCenter = 70;
-  bool _profitFilterEnabled = false;
+  double _profitFilterCenter = 0;
 
   @override
   void initState() {
@@ -8278,12 +8619,14 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
     return _products.where((p) {
       final matchesQuery = query.isEmpty ||
           _normalizeSearchText(p.name).contains(query) ||
-          p.barcode.contains(query);
-      final matchesGroup = _selectedGroup == 'همه' ||
-          p.groupName.trim() == _selectedGroup;
+          p.barcode.toLowerCase().contains(query);
+      final matchesGroup =
+          _selectedGroup == 'همه' || p.groupName.trim() == _selectedGroup;
       final percentage = _percentage(p);
-      final matchesProfit = !_profitFilterEnabled || percentage == null ||
-          (percentage >= _profitFilterCenter - 10 && percentage <= _profitFilterCenter + 10);
+      final matchesProfit = _profitFilterCenter <= 0 ||
+          (percentage != null &&
+              percentage >= _profitFilterCenter - 10 &&
+              percentage <= _profitFilterCenter + 10);
       return matchesQuery && matchesGroup && matchesProfit;
     }).toList();
   }
@@ -8304,7 +8647,8 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
   }
 
   Future<void> _editSellingPrice(ProductDatabaseItem product) async {
-    final controller = TextEditingController(text: product.sellPrice.toString());
+    final controller =
+        TextEditingController(text: product.sellPrice.toString());
     final formKey = GlobalKey<FormState>();
     final result = await showDialog<int>(
       context: context,
@@ -8341,9 +8685,14 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
             label: const Text('ثبت قیمت جدید'),
             onPressed: () {
               if (!formKey.currentState!.validate()) return;
-              Navigator.pop(dialogContext, int.parse(
-                controller.text.replaceAll(',', '').replaceAll('٬', '').trim(),
-              ));
+              Navigator.pop(
+                  dialogContext,
+                  int.parse(
+                    controller.text
+                        .replaceAll(',', '')
+                        .replaceAll('٬', '')
+                        .trim(),
+                  ));
             },
           ),
         ],
@@ -8410,21 +8759,10 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
                 labelText: 'جستجوی کالا',
                 hintText: 'نام کالا یا بارکد',
                 prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
               ),
               onChanged: (value) => setState(() => _searchQuery = value),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
-            child: Column(
-              children: [
-                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  const Text('فیلتر درصد سود', style: TextStyle(fontWeight: FontWeight.bold)),
-                  Text(_profitFilterEnabled ? 'بازه: ${_formatPercent(_profitFilterCenter - 10)}٪ تا ${_formatPercent(_profitFilterCenter + 10)}٪' : 'همه درصدهای سود'),
-                ]),
-                Slider(value: _profitFilterCenter, min: 0, max: 200, divisions: 40, label: '${_formatPercent(_profitFilterCenter)}٪', onChanged: (v) => setState(() { _profitFilterCenter = v; _profitFilterEnabled = true; })),
-              ],
             ),
           ),
           if (_groups.length > 1)
@@ -8458,9 +8796,42 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
               ),
             ),
           ),
+          if (widget.products.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('فیلتر درصد سود',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        Text(_profitFilterCenter <= 0
+                            ? 'همه'
+                            : 'بین ${_formatPercent((_profitFilterCenter - 10).clamp(0, 100))}٪ تا ${_formatPercent((_profitFilterCenter + 10).clamp(0, 100))}٪'),
+                      ]),
+                  Slider(
+                    min: 0,
+                    max: 100,
+                    divisions: 20,
+                    value: _profitFilterCenter,
+                    label: _profitFilterCenter <= 0
+                        ? 'همه'
+                        : '${_formatPercent(_profitFilterCenter)}٪',
+                    onChanged: (value) =>
+                        setState(() => _profitFilterCenter = value),
+                  ),
+                ],
+              ),
+            ),
+          ],
           Expanded(
             child: products.isEmpty
-                ? Center(child: Text(_products.isEmpty ? 'هنوز کالایی در بانک اطلاعاتی ثبت نشده است.' : 'کالایی با این مشخصات پیدا نشد.'))
+                ? Center(
+                    child: Text(_products.isEmpty
+                        ? 'هنوز کالایی در بانک اطلاعاتی ثبت نشده است.'
+                        : 'کالایی با این مشخصات پیدا نشد.'))
                 : ListView.separated(
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
                     itemCount: products.length,
@@ -8479,7 +8850,8 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
                         color: cardColor,
                         elevation: product.isPriceModified ? 3 : 1.5,
                         margin: EdgeInsets.zero,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16)),
                         child: Padding(
                           padding: const EdgeInsets.all(14),
                           child: Column(
@@ -8488,43 +8860,77 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
                               Row(
                                 children: [
                                   CircleAvatar(
-                                    backgroundColor: statusColor.withOpacity(.12),
-                                    child: Text(_toPersianDigits('${index + 1}'), style: TextStyle(color: statusColor, fontWeight: FontWeight.bold)),
+                                    backgroundColor:
+                                        statusColor.withOpacity(.12),
+                                    child: Text(
+                                        _toPersianDigits('${index + 1}'),
+                                        style: TextStyle(
+                                            color: statusColor,
+                                            fontWeight: FontWeight.bold)),
                                   ),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        Text(product.name.isEmpty ? 'کالای بدون نام' : product.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                        Text(
+                                            product.name.isEmpty
+                                                ? 'کالای بدون نام'
+                                                : product.name,
+                                            style: const TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold)),
                                         const SizedBox(height: 3),
-                                        Text('گروه: ${product.groupName}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                        Text('گروه: ${product.groupName}',
+                                            style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey.shade700)),
                                       ],
                                     ),
                                   ),
                                   if (product.isPriceModified)
                                     const Tooltip(
                                       message: 'قیمت این کالا ویرایش شده است',
-                                      child: Icon(Icons.edit_note, color: Colors.orange),
+                                      child: Icon(Icons.edit_note,
+                                          color: Colors.orange),
                                     ),
                                 ],
                               ),
                               if (product.barcode.isNotEmpty) ...[
                                 const SizedBox(height: 5),
-                                Text('بارکد: ${_toPersianDigits(product.barcode)}', textDirection: TextDirection.rtl, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                Text(
+                                    'بارکد: ${_toPersianDigits(product.barcode)}',
+                                    textDirection: TextDirection.rtl,
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey.shade600)),
                               ],
                               const Divider(height: 22),
                               Row(
                                 children: [
-                                  Expanded(child: _priceColumn('قیمت خرید', product.buyPrice)),
+                                  Expanded(
+                                      child: _priceColumn(
+                                          'قیمت خرید', product.buyPrice)),
                                   Expanded(
                                     child: Column(
                                       children: [
-                                        Text('قیمت فروش', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                        Text('قیمت فروش',
+                                            style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey.shade600)),
                                         const SizedBox(height: 4),
-                                        Text(_displayPrice(product.sellPrice), textDirection: TextDirection.rtl, style: const TextStyle(fontWeight: FontWeight.w700)),
-                                        if (product.originalSellPrice != null && product.isPriceModified)
-                                          Text('قبلی: ${_displayPrice(product.originalSellPrice!)}', style: TextStyle(fontSize: 10, color: Colors.grey.shade700)),
+                                        Text(_displayPrice(product.sellPrice),
+                                            textDirection: TextDirection.rtl,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w700)),
+                                        if (product.originalSellPrice != null &&
+                                            product.isPriceModified)
+                                          Text(
+                                              'قبلی: ${_displayPrice(product.originalSellPrice!)}',
+                                              style: TextStyle(
+                                                  fontSize: 10,
+                                                  color: Colors.grey.shade700)),
                                       ],
                                     ),
                                   ),
@@ -8535,27 +8941,52 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
                                 onPressed: () => _editSellingPrice(product),
                                 icon: const Icon(Icons.edit_outlined),
                                 label: const Text('تغییر قیمت فروش'),
-                                style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(42)),
+                                style: ElevatedButton.styleFrom(
+                                    minimumSize: const Size.fromHeight(42)),
                               ),
                               const SizedBox(height: 10),
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 10),
                                 decoration: BoxDecoration(
                                   color: statusColor.withOpacity(.09),
                                   borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: statusColor.withOpacity(.25)),
+                                  border: Border.all(
+                                      color: statusColor.withOpacity(.25)),
                                 ),
                                 child: Row(
                                   children: [
-                                    Icon(isProfit ? Icons.trending_up : Icons.trending_down, color: statusColor),
+                                    Icon(
+                                        isProfit
+                                            ? Icons.trending_up
+                                            : Icons.trending_down,
+                                        color: statusColor),
                                     const SizedBox(width: 8),
-                                    Expanded(child: Text(isProfit ? 'سود فروش' : 'ضرر فروش', style: TextStyle(color: statusColor, fontWeight: FontWeight.bold))),
-                                    Text('${profit >= 0 ? '+' : '-'}${_displayPrice(profit.abs())}', textDirection: TextDirection.rtl, style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 15)),
+                                    Expanded(
+                                        child: Text(
+                                            isProfit ? 'سود فروش' : 'ضرر فروش',
+                                            style: TextStyle(
+                                                color: statusColor,
+                                                fontWeight: FontWeight.bold))),
+                                    Text(
+                                        '${profit >= 0 ? '+' : '-'}${_displayPrice(profit.abs())}',
+                                        textDirection: TextDirection.rtl,
+                                        style: TextStyle(
+                                            color: statusColor,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 15)),
                                     const SizedBox(width: 10),
                                     if (percentage != null)
-                                      Text('${percentage >= 0 ? '+' : '-'}${_formatPercent(percentage.abs())}٪', style: TextStyle(color: statusColor, fontWeight: FontWeight.bold))
+                                      Text(
+                                          '${percentage >= 0 ? '+' : '-'}${_formatPercent(percentage.abs())}٪',
+                                          style: TextStyle(
+                                              color: statusColor,
+                                              fontWeight: FontWeight.bold))
                                     else
-                                      Text('درصد نامشخص', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                                      Text('درصد نامشخص',
+                                          style: TextStyle(
+                                              color: Colors.grey.shade600,
+                                              fontSize: 12)),
                                   ],
                                 ),
                               ),
@@ -8575,9 +9006,12 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Text(title, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        Text(title,
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
         const SizedBox(height: 4),
-        Text(_displayPrice(price), textDirection: TextDirection.rtl, style: const TextStyle(fontWeight: FontWeight.w700)),
+        Text(_displayPrice(price),
+            textDirection: TextDirection.rtl,
+            style: const TextStyle(fontWeight: FontWeight.w700)),
       ],
     );
   }
@@ -9040,7 +9474,9 @@ class _ProductDatabaseScreenState extends State<ProductDatabaseScreen> {
                     sellPrice:
                         int.tryParse(sellCtrl.text.replaceAll(',', '')) ?? 0,
                     folder: folder,
-                    groupName: groupCtrl.text.trim().isEmpty ? 'عمومی' : groupCtrl.text.trim(),
+                    groupName: groupCtrl.text.trim().isEmpty
+                        ? 'عمومی'
+                        : groupCtrl.text.trim(),
                   ));
                   _newItemFolder = folder;
                 });
@@ -9199,7 +9635,9 @@ class _ProductDatabaseScreenState extends State<ProductDatabaseScreen> {
                             itemBuilder: (context, index) {
                               final item = visible[index];
                               return Card(
-                                color: item.isPriceModified ? Colors.yellow.shade100 : null,
+                                color: item.isPriceModified
+                                    ? Colors.yellow.shade100
+                                    : null,
                                 margin: const EdgeInsets.only(bottom: 8),
                                 child: ListTile(
                                   leading: CircleAvatar(
@@ -9316,13 +9754,14 @@ class _InventoryCountScreenState extends State<InventoryCountScreen> {
   }
 
   void _search(String value) {
-    final q = value.trim().toLowerCase();
+    final q = _normalizeSearchText(value);
     setState(() {
       _results = q.isEmpty
           ? List<ProductDatabaseItem>.from(widget.products)
           : widget.products
               .where((p) =>
-                  _normalizeSearchText(p.name).contains(q) || p.barcode.contains(q))
+                  _normalizeSearchText(p.name).contains(q) ||
+                  p.barcode.contains(q))
               .toList();
     });
   }
@@ -10811,7 +11250,8 @@ class ProductDatabaseItem {
     String? groupName,
     bool? isPriceModified,
     int? originalSellPrice,
-  }) => ProductDatabaseItem(
+  }) =>
+      ProductDatabaseItem(
         barcode: barcode ?? this.barcode,
         name: name ?? this.name,
         stock: stock ?? this.stock,
@@ -10901,9 +11341,9 @@ class DeliveryManifest {
   String date;
   List<DeliveryItem> items;
   int totalPrice;
-  String createdAt;
   int freightCost;
   String senderCompany;
+  String createdAt;
 
   DeliveryManifest({
     required this.id,
@@ -10911,9 +11351,9 @@ class DeliveryManifest {
     required this.date,
     required this.items,
     required this.totalPrice,
-    required this.createdAt,
     this.freightCost = 0,
     this.senderCompany = '',
+    required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
@@ -10922,9 +11362,9 @@ class DeliveryManifest {
         'date': date,
         'items': items.map((item) => item.toJson()).toList(),
         'totalPrice': totalPrice,
-        'createdAt': createdAt,
         'freightCost': freightCost,
         'senderCompany': senderCompany,
+        'createdAt': createdAt,
       };
 
   factory DeliveryManifest.fromJson(Map<String, dynamic> json) {
@@ -10936,10 +11376,10 @@ class DeliveryManifest {
       number: json['number'] ?? 0,
       date: json['date'],
       items: itemsList,
-      totalPrice: json['totalPrice'],
+      totalPrice: json['totalPrice'] ?? 0,
+      freightCost: json['freightCost'] ?? 0,
+      senderCompany: json['senderCompany'] ?? '',
       createdAt: json['createdAt'],
-      freightCost: (json['freightCost'] as num?)?.toInt() ?? 0,
-      senderCompany: json['senderCompany']?.toString() ?? '',
     );
   }
 }
