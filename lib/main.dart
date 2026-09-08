@@ -79,42 +79,6 @@ List<int> _gregorianToJalali(int gy, int gm, int gd) {
   return [jy, jm, jd];
 }
 
-String _normalizeSearchText(String value) {
-  var result = value.toLowerCase().trim();
-  const replacements = {'ي':'ی','ى':'ی','ئ':'ی','ك':'ک','ة':'ه','ۀ':'ه','ؤ':'و','أ':'ا','إ':'ا','آ':'ا'};
-  replacements.forEach((from, to) => result = result.replaceAll(from, to));
-  result = result.replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), '');
-  result = result.replaceAll(RegExp(r'[\s\u200c\u200d]+'), '');
-  return result;
-}
-
-bool _searchMatches(String text, String query) {
-  final normalizedText = _normalizeSearchText(text);
-  final normalizedQuery = _normalizeSearchText(query);
-  if (normalizedQuery.isEmpty) return true;
-  if (normalizedText.contains(normalizedQuery)) return true;
-  if (normalizedQuery.length < 3) return false;
-  // برای خطاهای تایپی کوچک، اختلاف حداکثر یک حرف را هم می‌پذیریم.
-  for (var i = 0; i < normalizedText.length; i++) {
-    final remaining = normalizedText.length - i;
-    for (final length in [normalizedQuery.length - 1, normalizedQuery.length, normalizedQuery.length + 1]) {
-      if (length <= 0 || length > remaining) continue;
-      final part = normalizedText.substring(i, i + length);
-      var prev = List<int>.generate(normalizedQuery.length + 1, (j) => j);
-      for (var r = 1; r <= part.length; r++) {
-        final curr = List<int>.filled(normalizedQuery.length + 1, 0);
-        curr[0] = r;
-        for (var c = 1; c <= normalizedQuery.length; c++) {
-          curr[c] = [curr[c - 1] + 1, prev[c] + 1, prev[c - 1] + (part.codeUnitAt(r - 1) == normalizedQuery.codeUnitAt(c - 1) ? 0 : 1)].reduce((a, b) => a < b ? a : b);
-        }
-        prev = curr;
-      }
-      if (prev[normalizedQuery.length] <= 1) return true;
-    }
-  }
-  return false;
-}
-
 String _toPersianDigits(String value) {
   const latin = '0123456789';
   const persian = '۰۱۲۳۴۵۶۷۸۹';
@@ -252,6 +216,20 @@ String _displayPrice(int price) {
   return '${_formatPrice(price)} ریال';
 }
 
+String _normalizeSearchText(String value) {
+  return value.toLowerCase()
+      .replaceAll('ك', 'ک').replaceAll('ي', 'ی').replaceAll('ى', 'ی')
+      .replaceAll('ۀ', 'ه').replaceAll('ة', 'ه')
+      .replaceAll(RegExp(r'[\u200c\u200d\s]+'), '');
+}
+
+String _manifestItemQuantityText(DeliveryItem item) {
+  if ((item.unit == 'بسته' || item.unit == 'جین') && item.packageSize > 0) {
+    return 'تعداد ${item.quantity} ${item.unit} | داخل هر ${item.unit}: ${item.packageSize} | تعداد واقعی: ${item.realQuantity}';
+  }
+  return 'تعداد ${item.quantity} ${item.unit}';
+}
+
 // ==================== تابع بارگذاری فونت برای PDF ====================
 
 Future<pw.Font> _loadFont() async {
@@ -354,9 +332,6 @@ class StoreNotificationService {
   static const String _logoAsset = 'assets/images/Logopit_1787568628075.png';
   static const String _enabledKey = 'notifications_enabled';
   static const String _channelId = 'store_assistant_notifications';
-  static const String _limitedKey = 'notifications_limited_mode';
-  static const String _openNotificationDateKey = 'notification_open_date';
-  static const String _invoiceNotificationDateKey = 'notification_invoice_date';
   String? _logoPath;
   bool _initialized = false;
 
@@ -620,19 +595,16 @@ class StoreNotificationService {
     );
   }
 
-  Future<bool> isLimitedMode() async { final prefs = await SharedPreferences.getInstance(); return prefs.getBool(_limitedKey) ?? false; }
-  Future<void> setLimitedMode(bool value) async { final prefs = await SharedPreferences.getInstance(); await prefs.setBool(_limitedKey, value); }
-  String _todayKey() { final now = DateTime.now(); return '${now.year}-${now.month}-${now.day}'; }
-  Future<bool> _isTodayMarked(String key) async { final prefs = await SharedPreferences.getInstance(); return prefs.getString(key) == _todayKey(); }
-  Future<void> _markToday(String key) async { final prefs = await SharedPreferences.getInstance(); await prefs.setString(key, _todayKey()); }
-
   Future<void> showWelcomeNotification({
     required String userName,
     required String gender,
     DateTime? date,
   }) async {
     if (!await isEnabled()) return;
-    if (await isLimitedMode() && await _isTodayMarked(_openNotificationDateKey)) return;
+    final prefs = await SharedPreferences.getInstance();
+    final today = _jalaliNumericForDate(date ?? DateTime.now());
+    if (prefs.getBool('notifications_limited') == true &&
+        prefs.getString('welcome_notification_last_date') == today) return;
     await initialize();
     final logoPath = await _ensureLogoFile();
     final now = date ?? DateTime.now();
@@ -647,7 +619,7 @@ class StoreNotificationService {
       ),
       _details(imagePath: logoPath),
     );
-    if (await isLimitedMode()) await _markToday(_openNotificationDateKey);
+    await prefs.setString('welcome_notification_last_date', today);
   }
 
   Future<void> showInvoiceRegistered({
@@ -656,7 +628,10 @@ class StoreNotificationService {
     String? invoiceImagePath,
   }) async {
     if (!await isEnabled()) return;
-    if (await isLimitedMode() && await _isTodayMarked(_invoiceNotificationDateKey)) return;
+    final prefs = await SharedPreferences.getInstance();
+    final today = _jalaliNumericForDate(DateTime.now());
+    if (prefs.getBool('notifications_limited') == true &&
+        prefs.getString('invoice_notification_last_date') == today) return;
     await initialize();
     final imagePath = invoiceImagePath ?? await _ensureLogoFile();
     final body =
@@ -668,7 +643,7 @@ class StoreNotificationService {
       _details(imagePath: imagePath),
       payload: 'invoice_registered:$invoiceNumber',
     );
-    if (await isLimitedMode()) await _markToday(_invoiceNotificationDateKey);
+    await prefs.setString('invoice_notification_last_date', today);
   }
 }
 
@@ -1141,13 +1116,29 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ==================== صفحه اصلی برنامه ====================
-
 class DeliveryScreen extends StatefulWidget {
   const DeliveryScreen({super.key});
-
   @override
   State<DeliveryScreen> createState() => _DeliveryScreenState();
+}
+
+class _NewMessageDot extends StatefulWidget {
+  const _NewMessageDot();
+  @override
+  State<_NewMessageDot> createState() => _NewMessageDotState();
+}
+
+class _NewMessageDotState extends State<_NewMessageDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this, duration: const Duration(milliseconds: 700),
+  )..repeat(reverse: true);
+  @override
+  void dispose() { _c.dispose(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: Tween(begin: .25, end: 1.0).animate(_c),
+    child: Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle)),
+  );
 }
 
 class _DeliveryScreenState extends State<DeliveryScreen> {
@@ -1192,6 +1183,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
 
   String _userName = '';
   String _userGender = 'male';
+  String _managerMessage = '';
+  bool _managerMessageNew = false;
 
   @override
   void initState() {
@@ -1242,7 +1235,23 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       _userName = prefs.getString('user_name') ?? '';
       _userGender =
           prefs.getString('user_gender') == 'female' ? 'female' : 'male';
+      _managerMessage = prefs.getString('manager_message') ?? '';
+      _managerMessageNew = _managerMessage.isNotEmpty && prefs.getString('manager_message_seen_date') != _todayJalali();
     });
+  }
+
+  Future<void> _openManagerMessage() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() => _managerMessageNew = false);
+    await prefs.setString('manager_message_seen_date', _todayJalali());
+    if (_managerMessage.trim().isEmpty) { _showSuccessMessage('پیامی از طرف مدیریت وجود ندارد.'); return; }
+    if (!mounted) return;
+    showDialog<void>(context: context, builder: (_) => AlertDialog(
+      title: const Row(children: [Icon(Icons.campaign_outlined), SizedBox(width: 8), Text('پیام مدیریت')]),
+      content: Text(_managerMessage),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('بستن'))],
+    ));
   }
 
   Future<void> _loadCustomEvents() async {
@@ -2030,7 +2039,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          Text('${item.quantity} ${item.unit}'),
+                          Expanded(child: Text(_manifestItemQuantityText(item), textAlign: TextAlign.right)),
                           const SizedBox(width: 8),
                           Text(
                             _displayPrice(item.purchasePrice),
@@ -2072,10 +2081,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     _closeKeyboard();
     final hasSales = _salesInvoices.isNotEmpty;
     final hasManifests = _savedManifests.isNotEmpty;
-    final hasInventoryCounts = _inventoryCounts.isNotEmpty;
     final hasChangedPrices = _productDatabase.any((p) => p.isPriceModified);
+    final hasInventoryReport = _inventoryCounts.isNotEmpty;
 
-    if (!hasSales && !hasManifests && !hasChangedPrices && !hasInventoryCounts) {
+    if (!hasSales && !hasManifests && !hasChangedPrices && !hasInventoryReport) {
       _showSuccessMessage(
           '⚠️ هنوز گزارشی برای اشتراک وجود ندارد');
       return;
@@ -2127,6 +2136,16 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     _shareChangedPriceReport();
                   },
                 ),
+              if (hasInventoryReport)
+                ListTile(
+                  leading: const CircleAvatar(backgroundColor: Color(0xFFE0F2F1), child: Icon(Icons.fact_check_outlined, color: Colors.teal)),
+                  title: const Text('گزارش انبارگردانی'),
+                  subtitle: Text('تعداد اقلام: ${_inventoryCounts.length}'),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => InventoryReportScreen(entries: _inventoryCounts)));
+                  },
+                ),
               if (hasManifests)
                 ListTile(
                   leading: const CircleAvatar(
@@ -2139,26 +2158,6 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                   onTap: () {
                     Navigator.pop(sheetContext);
                     _shareAllManifests();
-                  },
-                ),
-              if (hasInventoryCounts)
-                ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Color(0xFFE8EAF6),
-                    child: Icon(Icons.inventory_2_outlined, color: Colors.indigo),
-                  ),
-                  title: const Text('گزارش انبارگردانی'),
-                  subtitle: Text('تعداد اقلام: ${_inventoryCounts.length}'),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    Navigator.push(
-                      context,
-                      _slideRoute(
-                        InventoryReportScreen(
-                          entries: List<InventoryCountEntry>.from(_inventoryCounts),
-                        ),
-                      ),
-                    );
                   },
                 ),
             ],
@@ -2235,6 +2234,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 1: pw.FlexColumnWidth(1.8),
                 2: pw.FlexColumnWidth(3.8),
                 3: pw.FlexColumnWidth(1.5),
+                4: pw.FlexColumnWidth(2.0),
+                5: pw.FlexColumnWidth(2.0),
               },
               children: [
                 pw.TableRow(
@@ -2243,7 +2244,9 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     _pdfShareCell('شماره بارنامه', font, bold: true),
                     _pdfShareCell('تاریخ', font, bold: true),
                     _pdfShareCell('نام کالا', font, bold: true),
-                    _pdfShareCell('تعداد', font, bold: true),
+                    _pdfShareCell('تعداد / بسته', font, bold: true),
+                    _pdfShareCell('هزینه باربری', font, bold: true),
+                    _pdfShareCell('شرکت ارسال کننده', font, bold: true),
                   ],
                 ),
                 ..._savedManifests.expand(
@@ -2255,11 +2258,9 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                         _pdfShareCell(m.date, font),
                         _pdfShareCell(item.name, font,
                             align: pw.TextAlign.right),
-                        _pdfShareCell(
-                          '${_toPersianDigits(item.quantity.toString())} ${item.unit}'
-                              '${item.packageSize > 0 ? ' | داخل هر ${item.unit}: ${_toPersianDigits(item.packageSize.toString())}' : ''}',
-                          font,
-                        ),
+                        _pdfShareCell(_manifestItemQuantityText(item), font),
+                        _pdfShareCell('${_formatPrice(m.freightCost)} ریال', font),
+                        _pdfShareCell(m.senderCompany.isEmpty ? '-' : m.senderCompany, font),
                       ],
                     ),
                   ),
@@ -2351,6 +2352,14 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                         font,
                         fontWeight: pw.FontWeight.bold,
                         color: PdfColors.green),
+                    if (manifest.freightCost > 0) ...[
+                      pw.SizedBox(height: 5),
+                      _pdfShareTextWidget('هزینه کل باربری: ${_formatPrice(manifest.freightCost)} ریال', font, fontWeight: pw.FontWeight.bold),
+                    ],
+                    if (manifest.senderCompany.trim().isNotEmpty) ...[
+                      pw.SizedBox(height: 5),
+                      _pdfShareTextWidget('شرکت ارسال کننده: ${manifest.senderCompany}', font, fontWeight: pw.FontWeight.bold),
+                    ],
                   ]),
             ),
             pw.SizedBox(height: 18),
@@ -2385,7 +2394,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                           _pdfShareCell(entry.value.name, font,
                               align: pw.TextAlign.right),
                           _pdfShareCell(
-                              '${entry.value.quantity} ${entry.value.unit}',
+                              _manifestItemQuantityText(entry.value),
                               font),
                           _pdfShareCell(
                               '${_formatPrice(entry.value.purchasePrice)} ریال',
@@ -3365,10 +3374,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            final query = _normalizeSearchText(searchCtrl.text);
+            final query = searchCtrl.text.trim().toLowerCase();
             final products = _productDatabase.where((p) {
               if (query.isEmpty) return true;
-              return _searchMatches(p.name, query) ||
+              return _normalizeSearchText(p.name).contains(query) ||
                   p.barcode.contains(query);
             }).toList();
 
@@ -4144,14 +4153,14 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
 
       final currentResults = _currentItems
           .where((item) =>
-              _searchMatches(item.name, searchTerm) ||
+              _normalizeSearchText(item.name).contains(searchTerm) ||
               item.barcode.contains(searchTerm))
           .toList();
       _filteredItems = currentResults;
 
       for (var manifest in _savedManifests) {
         for (var item in manifest.items) {
-          if (_searchMatches(item.name, searchTerm) ||
+          if (_normalizeSearchText(item.name).contains(searchTerm) ||
               item.barcode.contains(searchTerm)) {
             _manifestSearchResults.add({
               'manifest': manifest,
@@ -4852,8 +4861,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
 
   Widget _buildSearchResults() {
     final searchDbMatches = _productDatabase.where((p) {
-      final term = _searchController.text.toLowerCase().trim();
-      return p.name.toLowerCase().contains(term) || p.barcode.contains(term);
+      final term = _normalizeSearchText(_searchController.text);
+      return _normalizeSearchText(p.name).contains(term) || p.barcode.contains(term);
     }).toList();
 
     final totalResults = _filteredItems.length +
@@ -5329,120 +5338,55 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               const SizedBox(height: 10),
               LayoutBuilder(
                 builder: (context, constraints) {
+                  final allTools = <Widget>[
+                    _buildToolCard(icon: Icons.local_shipping_outlined, title: 'بارنامه', subtitle: 'ثبت و مدیریت بار', iconColor: Colors.blue, onTap: _openManifestScreen),
+                    _buildToolCard(icon: Icons.receipt_long_outlined, title: 'فروش', subtitle: 'فاکتورهای فروش', iconColor: Colors.green, onTap: _openSalesInvoicesScreen),
+                    _buildToolCard(icon: Icons.payments_outlined, title: 'هزینه های روزانه', subtitle: 'ثبت و مدیریت هزینه ها', iconColor: Colors.redAccent, onTap: _openDailyExpensesScreen),
+                    _buildToolCard(icon: Icons.inventory_2_outlined, title: 'بانک اطلاعاتی', subtitle: 'کالاها و پوشه‌ها', iconColor: Colors.deepPurple, onTap: _openProductDatabaseScreen),
+                    _buildToolCard(icon: Icons.share_outlined, title: 'اشتراک گزارش', subtitle: 'گزارش فروش، بارنامه و انبارگردانی', iconColor: Colors.orange, onTap: _openShareReportChooser),
+                    _buildToolCard(icon: Icons.settings_outlined, title: 'تنظیمات', subtitle: 'پروفایل و ظاهر', iconColor: Colors.grey, onTap: _openSettingsScreen),
+                    _buildToolCard(icon: Icons.fact_check_outlined, title: 'انبارگردانی', subtitle: 'مغایرت موجودی کالاها', iconColor: Colors.teal, onTap: _openInventoryCountScreen),
+                    _buildToolCard(icon: Icons.center_focus_strong_outlined, title: 'شمارشگر مجازی', subtitle: 'شمارش هوشمند اجسام با دوربین', iconColor: Colors.indigo, onTap: _openVirtualCounterScreen),
+                    _buildToolCard(icon: Icons.trending_up_outlined, title: 'محاسبه سود فروش', subtitle: 'محاسبه سود و درصد افزایش قیمت', iconColor: Colors.green, onTap: _openSalesProfitScreen),
+                  ];
                   final cardWidth = (constraints.maxWidth - 10) / 2;
                   final cardHeight = cardWidth / 1.65;
                   final toolsHeight = (cardHeight * 2) + 10;
-                  return SizedBox(
-                    height: toolsHeight,
-                    child: PageView.builder(
-                      controller: _toolsPageController,
-                      itemCount: 3,
-                      onPageChanged: (index) {
-                        setState(() => _toolsPage = index);
-                      },
-                      itemBuilder: (context, pageIndex) {
-                        final allTools = <Widget>[
-                          _buildToolCard(
-                            icon: Icons.local_shipping_outlined,
-                            title: 'بارنامه',
-                            subtitle: 'ثبت و مدیریت بار',
-                            iconColor: Colors.blue,
-                            onTap: _openManifestScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.receipt_long_outlined,
-                            title: 'فروش',
-                            subtitle: 'فاکتورهای فروش',
-                            iconColor: Colors.green,
-                            onTap: _openSalesInvoicesScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.payments_outlined,
-                            title: 'هزینه های روزانه',
-                            subtitle: 'ثبت و مدیریت هزینه ها',
-                            iconColor: Colors.redAccent,
-                            onTap: _openDailyExpensesScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.inventory_2_outlined,
-                            title: 'بانک اطلاعاتی',
-                            subtitle: 'کالاها و پوشه‌ها',
-                            iconColor: Colors.deepPurple,
-                            onTap: _openProductDatabaseScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.share_outlined,
-                            title: 'اشتراک گزارش',
-                            subtitle: 'گزارش فروش و بارنامه',
-                            iconColor: Colors.orange,
-                            onTap: _openShareReportChooser,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.settings_outlined,
-                            title: 'تنظیمات',
-                            subtitle: 'پروفایل و ظاهر',
-                            iconColor: Colors.grey,
-                            onTap: _openSettingsScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.fact_check_outlined,
-                            title: 'انبارگردانی',
-                            subtitle: 'مغایرت موجودی کالاها',
-                            iconColor: Colors.teal,
-                            onTap: _openInventoryCountScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.center_focus_strong_outlined,
-                            title: 'شمارشگر مجازی',
-                            subtitle: 'شمارش هوشمند اجسام با دوربین',
-                            iconColor: Colors.indigo,
-                            onTap: _openVirtualCounterScreen,
-                          ),
-                          _buildToolCard(
-                            icon: Icons.trending_up_outlined,
-                            title: 'محاسبه سود فروش',
-                            subtitle: 'محاسبه سود و درصد افزایش قیمت',
-                            iconColor: Colors.green,
-                            onTap: _openSalesProfitScreen,
-                          ),
-                        ];
-                        final pageTools =
-                            allTools.skip(pageIndex * 4).take(4).toList();
-                        while (pageTools.length < 4) {
-                          pageTools.add(const SizedBox.shrink());
-                        }
-                        return GridView.count(
-                          crossAxisCount: 2,
-                          physics: const NeverScrollableScrollPhysics(),
-                          padding: EdgeInsets.zero,
-                          mainAxisSpacing: 10,
-                          crossAxisSpacing: 10,
-                          childAspectRatio: 1.65,
-                          children: pageTools,
-                        );
-                      },
-                    ),
+                  final pageCount = (allTools.length / 4).ceil();
+                  if (_toolsPage >= pageCount) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted && _toolsPage >= pageCount) setState(() => _toolsPage = pageCount - 1);
+                    });
+                  }
+                  return Column(
+                    children: [
+                      SizedBox(
+                        height: toolsHeight,
+                        child: PageView.builder(
+                          controller: _toolsPageController,
+                          itemCount: pageCount,
+                          onPageChanged: (index) => setState(() => _toolsPage = index),
+                          itemBuilder: (context, pageIndex) {
+                            final pageTools = allTools.skip(pageIndex * 4).take(4).toList();
+                            while (pageTools.length < 4) pageTools.add(const SizedBox.shrink());
+                            return GridView.count(crossAxisCount: 2, physics: const NeverScrollableScrollPhysics(), padding: EdgeInsets.zero, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.65, children: pageTools);
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(pageCount, (index) => AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          width: _toolsPage == index ? 18 : 7,
+                          height: 7,
+                          decoration: BoxDecoration(color: _toolsPage == index ? Colors.green.shade700 : Colors.grey.shade400, borderRadius: BorderRadius.circular(10)),
+                        )),
+                      ),
+                    ],
                   );
                 },
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  2,
-                  (index) => AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    width: _toolsPage == index ? 18 : 7,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      color: _toolsPage == index
-                          ? Colors.green.shade700
-                          : Colors.grey.shade400,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                ),
               ),
               const SizedBox(height: 22),
               if (_currentItems.isNotEmpty) ...[
@@ -5566,9 +5510,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               Text('بارکد: ${item.barcode}',
                   style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
             Text('واحد: ${item.unit}', style: const TextStyle(fontSize: 13)),
-            Text('تعداد بسته: ${item.quantity} ${item.unit}'),
+            Text(_manifestItemQuantityText(item)),
             if (item.packageSize > 0)
-              Text('تعداد داخل هر ${item.unit}: ${item.packageSize}  •  تعداد واقعی: ${item.realQuantity}'),
+              Text(
+                  'تعداد داخل ${item.unit}: ${item.packageSize}  •  تعداد واقعی: ${item.realQuantity}'),
           ],
         ),
         trailing: IconButton(
@@ -5653,10 +5598,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('تعداد بسته: ${item.quantity} ${item.unit}'),
-                      if (item.packageSize > 0)
-                        Text('تعداد داخل هر ${item.unit}: ${item.packageSize}  •  تعداد واقعی: ${item.realQuantity}'),
+                      Text(
+                          'تعداد: ${item.quantity}${item.packageSize > 0 ? ' (مجموع: ${item.realQuantity})' : ''}'),
                       Text('واحد: ${item.unit}'),
+                      if (item.packageSize > 0)
+                        Text('تعداد داخل ${item.unit}: ${item.packageSize}'),
                     ],
                   ),
                   trailing: IconButton(
@@ -5705,6 +5651,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
           elevation: 0,
           backgroundColor: Colors.green.shade700,
           foregroundColor: Colors.white,
+          leading: Stack(clipBehavior: Clip.none, children: [
+            IconButton(onPressed: _openManagerMessage, icon: const Icon(Icons.mail_outline), tooltip: 'پیام مدیریت'),
+            if (_managerMessageNew) const Positioned(right: 8, top: 7, child: _NewMessageDot()),
+          ]),
           actions: [
             if (!_isViewingManifest)
               IconButton(
@@ -5882,6 +5832,27 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
 // ==================== ادامه کد (ManifestScreen, SalesInvoicesScreen, SettingsScreen, ProductDatabaseScreen, BarcodeScannerScreen و مدل‌ها) در پاسخ بعدی ====================
 // ==================== صفحه اختصاصی بارنامه‌ها ====================
 
+'توسعه‌دهنده: رضا قاسمی',
+                        style: TextStyle(color: Colors.grey)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _isViewingManifest
+                ? _buildManifestView()
+                : _buildMainView(),
+      ),
+    );
+  }
+}
+
+// ==================== ادامه کد (ManifestScreen, SalesInvoicesScreen, SettingsScreen, ProductDatabaseScreen, BarcodeScannerScreen و مدل‌ها) در پاسخ بعدی ====================
+// ==================== صفحه اختصاصی بارنامه‌ها ====================
+
 class ManifestScreen extends StatefulWidget {
   final List<DeliveryManifest> manifests;
   final Function(DeliveryManifest) onDelete;
@@ -5909,12 +5880,12 @@ class _ManifestScreenState extends State<ManifestScreen> {
 
   List<DeliveryManifest> get _filteredManifests {
     if (_searchQuery.isEmpty) return widget.manifests.reversed.toList();
-    final query = _searchQuery.toLowerCase().trim();
+    final query = _normalizeSearchText(_searchQuery);
     return widget.manifests.where((m) {
       if (m.number.toString().contains(query)) return true;
       if (m.date.contains(query)) return true;
       for (final item in m.items) {
-        if (item.name.toLowerCase().contains(query)) return true;
+        if (_normalizeSearchText(item.name).contains(query)) return true;
         if (item.barcode.contains(query)) return true;
       }
       return false;
@@ -5931,6 +5902,8 @@ class _ManifestScreenState extends State<ManifestScreen> {
     final nameCtrl = TextEditingController();
     final quantityCtrl = TextEditingController();
     final packageSizeCtrl = TextEditingController();
+    final freightCostCtrl = TextEditingController();
+    final senderCompanyCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
     String selectedUnit = 'عدد';
@@ -5984,6 +5957,8 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                   nameCtrl.clear();
                                   quantityCtrl.clear();
                                   packageSizeCtrl.clear();
+                                  freightCostCtrl.clear();
+                                  senderCompanyCtrl.clear();
                                   setSheetState(() {
                                     selectedUnit = 'عدد';
                                     isPackageUnit = false;
@@ -6189,6 +6164,12 @@ class _ManifestScreenState extends State<ManifestScreen> {
                             ),
                           ),
                           const SizedBox(height: 8),
+                          const SizedBox(height: 12),
+                          Row(children: [
+                            Expanded(child: TextFormField(controller: freightCostCtrl, decoration: InputDecoration(labelText: 'هزینه باربری (ریال)', prefixIcon: const Icon(Icons.payments_outlined), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))), keyboardType: TextInputType.number)),
+                            const SizedBox(width: 10),
+                            Expanded(child: TextFormField(controller: senderCompanyCtrl, decoration: InputDecoration(labelText: 'شرکت ارسال کننده', prefixIcon: const Icon(Icons.business_outlined), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+                          ]),
                           if (tempItems.isNotEmpty) ...[
                             const Text(
                               '📦 کالاهای بارنامه:',
@@ -6219,7 +6200,9 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                             fontWeight: FontWeight.w500),
                                       ),
                                       subtitle: Text(
-                                        'تعداد: ${item['quantity']} ${item['unit']}',
+                                        (item['unit'] == 'بسته' || item['unit'] == 'جین')
+                                            ? 'تعداد بسته: ${item['quantity']} | داخل بسته: ${item['packageSize']}'
+                                            : 'تعداد: ${item['quantity']} ${item['unit']}',
                                         style: const TextStyle(fontSize: 11),
                                       ),
                                       trailing: IconButton(
@@ -6294,6 +6277,8 @@ class _ManifestScreenState extends State<ManifestScreen> {
                                         createdAt: DateTime.now()
                                             .millisecondsSinceEpoch
                                             .toString(),
+                                        freightCost: int.tryParse(freightCostCtrl.text.replaceAll(',', '').trim()) ?? 0,
+                                        senderCompany: senderCompanyCtrl.text.trim(),
                                       );
 
                                       widget.onManifestSaved(manifest);
@@ -6323,6 +6308,9 @@ class _ManifestScreenState extends State<ManifestScreen> {
       },
     );
   }
+
+    freightCostCtrl.dispose();
+    senderCompanyCtrl.dispose();
 
   String _getTodayDate() {
     final now = DateTime.now();
@@ -6705,9 +6693,9 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
     if (query.isNotEmpty) {
       filtered = filtered
           .where((inv) =>
-              _searchMatches(inv.productName, query) ||
+              _normalizeSearchText(inv.productName).contains(query) ||
               inv.barcode.contains(query) ||
-              _searchMatches(inv.customerName, query) ||
+              _normalizeSearchText(inv.customerName).contains(query) ||
               inv.customerPhone.contains(query) ||
               inv.number.toString().contains(query))
           .toList();
@@ -7804,15 +7792,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _notificationsEnabled = prefs.getBool('notifications_enabled') ?? false;
-      _limitedNotifications = prefs.getBool('notifications_limited_mode') ?? false;
+      _limitedNotifications = prefs.getBool('notifications_limited') ?? false;
     });
   }
 
   Future<void> _toggleLimitedNotifications(bool value) async {
-    await StoreNotificationService.instance.setLimitedMode(value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('notifications_limited', value);
     if (!mounted) return;
     setState(() => _limitedNotifications = value);
-    _showSnackbar(value ? 'محدودسازی اعلان‌ها فعال شد.' : 'محدودسازی اعلان‌ها غیرفعال شد.');
+    if (value) {
+      _showSnackbar('اعلان محدود شد: صبح ۸:۳۰ و حداکثر یک اعلان ورود و یک اعلان فاکتور در روز.');
+    } else {
+      _showSnackbar('محدودسازی اعلان غیرفعال شد.');
+    }
   }
 
   Future<void> _toggleNotifications(bool value) async {
@@ -7835,9 +7828,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         setState(() => _notificationsEnabled = true);
         _showSnackbar('✅ سیستم اعلان فعال شد');
-        if (!await StoreNotificationService.instance.isLimitedMode()) {
-          await StoreNotificationService.instance.showActivationNotification();
-        }
+        await StoreNotificationService.instance.showActivationNotification();
         final prefs = await SharedPreferences.getInstance();
         final name = prefs.getString('user_name') ?? widget.userName;
         final gender =
@@ -8038,6 +8029,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: _darkMode ? Colors.white : Colors.orange,
                       ),
                     ),
+                    SwitchListTile(
+                      title: const Text('محدودسازی اعلان‌ها'),
+                      subtitle: const Text('اعلان صبح ساعت ۸:۳۰ و حداکثر یک اعلان ورود و یک اعلان فاکتور فروش در هر روز'),
+                      value: _limitedNotifications,
+                      onChanged: _notificationsEnabled ? _toggleLimitedNotifications : null,
+                      secondary: const Icon(Icons.notifications_paused_outlined),
+                    ),
                   ],
                 ),
               ),
@@ -8060,7 +8058,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       subtitle: Text(
                         _notificationBusy
                             ? 'در حال بررسی دسترسی...'
-                            : (_notificationsEnabled ? 'فعال' : 'غیرفعال'),
+                            : (_notificationsEnabled ? 'فعال • صبح ۸:۳۰ و حداکثر یک اعلان در روز' : 'غیرفعال'),
                       ),
                       value: _notificationsEnabled,
                       onChanged:
@@ -8072,13 +8070,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color:
                             _notificationsEnabled ? Colors.green : Colors.grey,
                       ),
-                    ),
-                    SwitchListTile(
-                      title: const Text('محدودسازی اعلان‌ها'),
-                      subtitle: const Text('اعلان صبح ساعت ۸:۳۰؛ هنگام ورود و ثبت فاکتور حداکثر یک اعلان در روز'),
-                      value: _limitedNotifications,
-                      onChanged: _notificationsEnabled ? _toggleLimitedNotifications : null,
-                      secondary: const Icon(Icons.schedule_outlined),
                     ),
                   ],
                 ),
@@ -8265,6 +8256,8 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
   late List<ProductDatabaseItem> _products;
   String _searchQuery = '';
   String _selectedGroup = 'همه';
+  double _profitFilterCenter = 70;
+  bool _profitFilterEnabled = false;
 
   @override
   void initState() {
@@ -8284,11 +8277,14 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
     final query = _normalizeSearchText(_searchQuery);
     return _products.where((p) {
       final matchesQuery = query.isEmpty ||
-          _searchMatches(p.name, query) ||
-          p.barcode.toLowerCase().contains(query);
+          _normalizeSearchText(p.name).contains(query) ||
+          p.barcode.contains(query);
       final matchesGroup = _selectedGroup == 'همه' ||
           p.groupName.trim() == _selectedGroup;
-      return matchesQuery && matchesGroup;
+      final percentage = _percentage(p);
+      final matchesProfit = !_profitFilterEnabled || percentage == null ||
+          (percentage >= _profitFilterCenter - 10 && percentage <= _profitFilterCenter + 10);
+      return matchesQuery && matchesGroup && matchesProfit;
     }).toList();
   }
 
@@ -8417,6 +8413,18 @@ class _SalesProfitScreenState extends State<SalesProfitScreen> {
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
               ),
               onChanged: (value) => setState(() => _searchQuery = value),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+            child: Column(
+              children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  const Text('فیلتر درصد سود', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(_profitFilterEnabled ? 'بازه: ${_formatPercent(_profitFilterCenter - 10)}٪ تا ${_formatPercent(_profitFilterCenter + 10)}٪' : 'همه درصدهای سود'),
+                ]),
+                Slider(value: _profitFilterCenter, min: 0, max: 200, divisions: 40, label: '${_formatPercent(_profitFilterCenter)}٪', onChanged: (v) => setState(() { _profitFilterCenter = v; _profitFilterEnabled = true; })),
+              ],
             ),
           ),
           if (_groups.length > 1)
@@ -9308,13 +9316,13 @@ class _InventoryCountScreenState extends State<InventoryCountScreen> {
   }
 
   void _search(String value) {
-    final q = _normalizeSearchText(value);
+    final q = value.trim().toLowerCase();
     setState(() {
       _results = q.isEmpty
           ? List<ProductDatabaseItem>.from(widget.products)
           : widget.products
               .where((p) =>
-                  _searchMatches(p.name, q) || p.barcode.contains(q))
+                  _normalizeSearchText(p.name).contains(q) || p.barcode.contains(q))
               .toList();
     });
   }
@@ -10894,6 +10902,8 @@ class DeliveryManifest {
   List<DeliveryItem> items;
   int totalPrice;
   String createdAt;
+  int freightCost;
+  String senderCompany;
 
   DeliveryManifest({
     required this.id,
@@ -10902,6 +10912,8 @@ class DeliveryManifest {
     required this.items,
     required this.totalPrice,
     required this.createdAt,
+    this.freightCost = 0,
+    this.senderCompany = '',
   });
 
   Map<String, dynamic> toJson() => {
@@ -10911,6 +10923,8 @@ class DeliveryManifest {
         'items': items.map((item) => item.toJson()).toList(),
         'totalPrice': totalPrice,
         'createdAt': createdAt,
+        'freightCost': freightCost,
+        'senderCompany': senderCompany,
       };
 
   factory DeliveryManifest.fromJson(Map<String, dynamic> json) {
@@ -10924,6 +10938,8 @@ class DeliveryManifest {
       items: itemsList,
       totalPrice: json['totalPrice'],
       createdAt: json['createdAt'],
+      freightCost: (json['freightCost'] as num?)?.toInt() ?? 0,
+      senderCompany: json['senderCompany']?.toString() ?? '',
     );
   }
 }
